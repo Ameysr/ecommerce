@@ -1,97 +1,220 @@
-const redisClient = require("../config/redis");
-const User =  require("../models/userSchema");
-const validate = require('../utils/validator');
-const bcrypt = require("bcrypt");
+const User = require('../models/user');
+const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 
-
+// Register a new user
 const register = async (req, res) => {
   try {
-    validate(req.body);
-    const { firstName, emailId, password } = req.body;
-
-    req.body.password = await bcrypt.hash(password, 10);
-
-    const user = await User.create(req.body);
-    const token = jwt.sign(
-      { _id: user._id, emailId: emailId},
-      process.env.JWT_KEY,
-      { expiresIn: 60 * 60 }
-    );
-
-    const reply = {
-      firstName: user.firstName,
-      emailId: user.emailId,
-      _id: user._id,
-    };
-
-    res.cookie('token', token, { maxAge: 60 * 60 * 1000 });
-    res.status(201).json({
-      user: reply,
-      message: "Registered Successfully"
+    const { firstName, lastName, email, password } = req.body;
+    
+    // Validate required fields
+    if (!firstName || !lastName || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'All fields are required'
+      });
+    }
+    
+    // Validate email format
+    const emailRegex = /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address'
+      });
+    }
+    
+    // Validate password length
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters long'
+      });
+    }
+    
+    // Check if user already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: 'User already exists with this email'
+      });
+    }
+    
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    // Create user
+    const user = await User.create({
+      firstName,
+      lastName,
+      email,
+      password: hashedPassword
     });
-  } catch (err) {
-    res.status(400).send("Error: " + err);
+    
+    // Generate JWT token
+    const token = jwt.sign(
+      { _id: user._id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+    
+    // Prepare user response (without password)
+    const userResponse = {
+      _id: user._id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      createdAt: user.createdAt
+    };
+    
+    // Set cookie with token
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    });
+    
+    res.status(201).json({
+      success: true,
+      message: 'User registered successfully',
+      user: userResponse,
+      token
+    });
+    
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error during registration',
+      error: error.message
+    });
   }
 };
 
+// Login user
 const login = async (req, res) => {
   try {
-    const { emailId, password } = req.body;
-
-    if (!emailId || !password) throw new Error("Invalid Credentials");
-
-    const user = await User.findOne({ emailId });
-    if (!user) throw new Error("User not found");
-
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) throw new Error("Invalid Credentials");
-
-    const reply = {
-      firstName: user.firstName,
-      emailId: user.emailId,
-      _id: user._id,
-    };
-
+    const { email, password } = req.body;
+    
+    // Validate required fields
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and password are required'
+      });
+    }
+    
+    // Find user by email
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+    
+    // Check password
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+    
+    // Generate JWT token
     const token = jwt.sign(
-      { _id: user._id, emailId: emailId },
-      process.env.JWT_KEY,
-      { expiresIn: 60 * 60 }
+      { _id: user._id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
     );
-
-    res.cookie('token', token, { maxAge: 60 * 60 * 1000 });
-    res.status(201).json({
-      user: reply,
-      message: "Login Successful"
+    
+    // Prepare user response (without password)
+    const userResponse = {
+      _id: user._id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      createdAt: user.createdAt
+    };
+    
+    // Set cookie with token
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 24 * 60 * 60 * 1000 // 24 hours
     });
-  } catch (err) {
-    res.status(401).send("Error: " + err);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Login successful',
+      user: userResponse,
+      token
+    });
+    
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error during login',
+      error: error.message
+    });
   }
 };
 
-
-// logOut feature
-
-const logout = async(req,res)=>{
-
-    try{
-        const {token} = req.cookies;
-        const payload = jwt.decode(token);
-
-        //  added token to the redis blocklist and cleard cookies
-        await redisClient.set(`token:${token}`,'Blocked');
-        await redisClient.expireAt(`token:${token}`,payload.exp);
-        
-
-        res.cookie("token",null,{expires: new Date(Date.now())});
-        res.send("Logged Out Succesfully");
-
+// Get user profile
+const getProfile = async (req, res) => {
+  try {
+    // User is attached to request by auth middleware
+    const user = await User.findById(req.user._id).select('-password');
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
     }
-    catch(err){
-       res.status(503).send("Error: "+err);
-    }
-}
+    
+    res.status(200).json({
+      success: true,
+      user
+    });
+    
+  } catch (error) {
+    console.error('Get profile error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error fetching profile',
+      error: error.message
+    });
+  }
+};
 
+// Logout user
+const logout = async (req, res) => {
+  try {
+    // Clear the token cookie
+    res.clearCookie('token');
+    
+    res.status(200).json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+    
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error during logout',
+      error: error.message
+    });
+  }
+};
 
-
-module.exports = {register, login,logout};
+module.exports = {
+  register,
+  login,
+  getProfile,
+  logout
+};
